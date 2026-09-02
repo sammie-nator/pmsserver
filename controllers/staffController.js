@@ -3,8 +3,10 @@ const asyncHandler = require("../utils/asyncHandler");
 
 const PIN_RE = /^\d{4,6}$/;
 
-// GET /api/staff
-// Role picker: no pins. Admin Staff page: ?includePin=1 returns pins.
+function namesMatch(a, b) {
+  return String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
+}
+
 const listStaff = asyncHandler(async (req, res) => {
   const { role, includePin } = req.query;
   const filter = { active: true };
@@ -19,7 +21,6 @@ const listStaff = asyncHandler(async (req, res) => {
   res.json(staff);
 });
 
-// POST /api/staff — admin only
 const createStaff = asyncHandler(async (req, res) => {
   const { name, role, phone, email, assignedAreas, pin } = req.body;
   if (!name || !role) {
@@ -39,7 +40,6 @@ const createStaff = asyncHandler(async (req, res) => {
   res.status(201).json(staff);
 });
 
-// PATCH /api/staff/:id — admin only
 const updateStaff = asyncHandler(async (req, res) => {
   const fields = ["name", "role", "phone", "email", "assignedAreas", "active", "pin"];
   const update = {};
@@ -60,7 +60,6 @@ const updateStaff = asyncHandler(async (req, res) => {
   res.json(staff);
 });
 
-// DELETE /api/staff/:id — admin only
 const deleteStaff = asyncHandler(async (req, res) => {
   const staff = await Staff.findByIdAndDelete(req.params.id);
   if (!staff) return res.status(404).json({ error: "Staff member not found" });
@@ -69,12 +68,9 @@ const deleteStaff = asyncHandler(async (req, res) => {
 
 /**
  * POST /api/staff/verify
- * body: { staffId, pin } OR { name, role, pin }
- *
- * Admin may use env bootstrap (no DB row required):
- *   BOOTSTRAP_ADMIN_NAME
- *   BOOTSTRAP_ADMIN_PIN
- * Agent / frontdesk always require a Staff document.
+ * Admin bootstrap (name is case-insensitive):
+ *   BOOTSTRAP_ADMIN_NAME, BOOTSTRAP_ADMIN_PIN
+ * Other roles require a Staff document in the DB.
  */
 const verifyPin = asyncHandler(async (req, res) => {
   const { staffId, name, role, pin } = req.body;
@@ -87,12 +83,11 @@ const verifyPin = asyncHandler(async (req, res) => {
   const bootstrapName = (process.env.BOOTSTRAP_ADMIN_NAME || "").trim();
   const bootstrapPin = String(process.env.BOOTSTRAP_ADMIN_PIN || "");
 
-  // —— Env bootstrap: admin only ——
   if (
     role === "admin" &&
     bootstrapName &&
     bootstrapPin &&
-    typedName === bootstrapName &&
+    namesMatch(typedName, bootstrapName) &&
     String(pin) === bootstrapPin
   ) {
     return res.json({
@@ -108,15 +103,19 @@ const verifyPin = asyncHandler(async (req, res) => {
     });
   }
 
-  // —— Normal path: DB staff (admin / agent / frontdesk) ——
   let staff = null;
   if (staffId) {
     staff = await Staff.findOne({ _id: staffId, active: true });
   } else if (typedName && role) {
     staff = await Staff.findOne({
-      name: typedName,
       role,
       active: true,
+      name: {
+        $regex: new RegExp(
+          `^${typedName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+          "i"
+        ),
+      },
     });
   } else {
     return res.status(400).json({ error: "staffId or name+role required." });
