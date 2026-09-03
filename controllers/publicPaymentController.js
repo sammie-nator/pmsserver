@@ -47,7 +47,6 @@ const initiateStk = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: e.message });
   }
 
-  // Anti double-pay: pending STK same unit + phone within 15 minutes
   const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000);
   const existingPending = await RentPayment.findOne({
     property: propertyId,
@@ -89,6 +88,11 @@ const initiateStk = asyncHandler(async (req, res) => {
     payment.checkoutRequestId = stk.CheckoutRequestID || "";
     await payment.save();
 
+    console.log("[mpesa] payment pending", {
+      paymentId: payment._id.toString(),
+      checkoutRequestId: payment.checkoutRequestId,
+    });
+
     return res.status(201).json({
       message: "STK push sent. Check your phone and enter your M-Pesa PIN.",
       paymentId: payment._id,
@@ -105,6 +109,7 @@ const initiateStk = asyncHandler(async (req, res) => {
     payment.status = "failed";
     payment.resultDesc = err.message;
     await payment.save();
+    console.error("[mpesa] STK failed", err.message);
     return res.status(err.status || 502).json({
       error: err.message || "STK push failed",
       details: err.details || undefined,
@@ -113,24 +118,40 @@ const initiateStk = asyncHandler(async (req, res) => {
 });
 
 const mpesaCallback = asyncHandler(async (req, res) => {
+  // Always ACK first
   res.json({ ResultCode: 0, ResultDesc: "Accepted" });
 
   try {
+    console.log("[mpesa callback] body:", JSON.stringify(req.body));
+
     const body = req.body?.Body?.stkCallback;
-    if (!body) return;
+    if (!body) {
+      console.log("[mpesa callback] no stkCallback in body");
+      return;
+    }
 
     const checkoutRequestId = body.CheckoutRequestID;
     const resultCode = String(body.ResultCode);
     const resultDesc = body.ResultDesc || "";
 
+    console.log("[mpesa callback] result", {
+      checkoutRequestId,
+      resultCode,
+      resultDesc,
+    });
+
     const payment = await RentPayment.findOne({ checkoutRequestId });
-    if (!payment) return;
+    if (!payment) {
+      console.log("[mpesa callback] no payment for", checkoutRequestId);
+      return;
+    }
 
     if (
       payment.status === "success" ||
       payment.status === "failed" ||
       payment.status === "cancelled"
     ) {
+      console.log("[mpesa callback] already final", payment.status);
       return;
     }
 
@@ -145,9 +166,15 @@ const mpesaCallback = asyncHandler(async (req, res) => {
     } else {
       payment.status = resultCode === "1032" ? "cancelled" : "failed";
     }
+
     await payment.save();
+    console.log("[mpesa callback] saved", {
+      paymentId: payment._id.toString(),
+      status: payment.status,
+      receipt: payment.mpesaReceipt,
+    });
   } catch (err) {
-    console.error("[mpesa callback]", err);
+    console.error("[mpesa callback] error", err);
   }
 });
 
