@@ -4,17 +4,12 @@ const { isConfigured, getAccessToken, baseUrl } = require("../utils/mpesa");
 
 const router = express.Router();
 
-// Public catalogue + STK
 router.get("/properties", ctrl.listPublicProperties);
 router.post("/mpesa/stk", ctrl.initiateStk);
 router.post("/mpesa/callback", ctrl.mpesaCallback);
 router.get("/mpesa/status/:paymentId", ctrl.paymentStatus);
 
-/**
- * Temporary auth diagnostic — remove after Daraja works.
- * GET /api/public/mpesa/debug-auth
- * Does not expose full secrets, only lengths + Daraja result.
- */
+// Temporary — remove after debugging
 router.get("/mpesa/debug-auth", async (req, res) => {
   const key = (process.env.MPESA_CONSUMER_KEY || "").trim();
   const secret = (process.env.MPESA_CONSUMER_SECRET || "").trim();
