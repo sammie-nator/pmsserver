@@ -74,7 +74,7 @@ async function stkPush({ amount, phone, accountReference, transactionDesc }) {
     BusinessShortCode: shortcode,
     Password: password,
     Timestamp: ts,
-    TransactionType: process.env.MPESA_TRANSACTION_TYPE || "CustomerPayBillOnline",
+    TransactionType: process.env.MPESA_TRANSACTION_TYPE || "CustomerBuyGoodsOnline",
     Amount: amt,
     PartyA: normalized,
     PartyB: shortcode,
