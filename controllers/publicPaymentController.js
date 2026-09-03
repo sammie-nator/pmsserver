@@ -33,7 +33,8 @@ const initiateStk = asyncHandler(async (req, res) => {
     return res.status(404).json({ error: "Unit not found." });
   }
 
-  let payAmount = amount != null && amount !== "" ? Number(amount) : property.monthlyRent;
+  let payAmount =
+    amount != null && amount !== "" ? Number(amount) : property.monthlyRent;
   payAmount = Math.round(payAmount);
   if (!payAmount || payAmount < 1) {
     return res.status(400).json({ error: "Invalid amount." });
@@ -46,7 +47,7 @@ const initiateStk = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: e.message });
   }
 
-  // Prevent double STK: pending for same unit + phone within 15 minutes
+  // Anti double-pay: pending STK same unit + phone within 15 minutes
   const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000);
   const existingPending = await RentPayment.findOne({
     property: propertyId,
@@ -62,7 +63,9 @@ const initiateStk = asyncHandler(async (req, res) => {
     });
   }
 
-  const accountRef = (property.unitCode || property.name || "RENT").replace(/\s+/g, "").slice(0, 12);
+  const accountRef = (property.unitCode || property.name || "RENT")
+    .replace(/\s+/g, "")
+    .slice(0, 12);
 
   const payment = await RentPayment.create({
     property: property._id,
@@ -102,12 +105,14 @@ const initiateStk = asyncHandler(async (req, res) => {
     payment.status = "failed";
     payment.resultDesc = err.message;
     await payment.save();
-    return res.status(err.status || 502).json({ error: err.message || "STK push failed" });
+    return res.status(err.status || 502).json({
+      error: err.message || "STK push failed",
+      details: err.details || undefined,
+    });
   }
 });
 
 const mpesaCallback = asyncHandler(async (req, res) => {
-  // Always ACK quickly
   res.json({ ResultCode: 0, ResultDesc: "Accepted" });
 
   try {
@@ -121,8 +126,11 @@ const mpesaCallback = asyncHandler(async (req, res) => {
     const payment = await RentPayment.findOne({ checkoutRequestId });
     if (!payment) return;
 
-    // Idempotent: already final
-    if (payment.status === "success" || payment.status === "failed" || payment.status === "cancelled") {
+    if (
+      payment.status === "success" ||
+      payment.status === "failed" ||
+      payment.status === "cancelled"
+    ) {
       return;
     }
 
