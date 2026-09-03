@@ -1,17 +1,3 @@
-/**
- * Safaricom Daraja STK helpers
- *
- * Env:
- *   MPESA_ENV = sandbox | production
- *   MPESA_BASE_URL = optional override (e.g. https://api.safaricom.co.ke)
- *   MPESA_CONSUMER_KEY
- *   MPESA_CONSUMER_SECRET
- *   MPESA_SHORTCODE          (Till or Paybill used as BusinessShortCode)
- *   MPESA_PASSKEY
- *   MPESA_CALLBACK_URL
- *   MPESA_TRANSACTION_TYPE   = CustomerBuyGoodsOnline (Till) | CustomerPayBillOnline (Paybill)
- */
-
 function baseUrl() {
   if (process.env.MPESA_BASE_URL) {
     return String(process.env.MPESA_BASE_URL).trim().replace(/\/$/, "");
@@ -80,12 +66,10 @@ async function getAccessToken() {
   return data.access_token;
 }
 
-/** Normalize KE phone to 2547XXXXXXXX or 2541XXXXXXXX */
 function normalizePhone(phone) {
   let p = String(phone || "").replace(/\D/g, "");
   if (p.startsWith("0")) p = "254" + p.slice(1);
   if ((p.startsWith("7") || p.startsWith("1")) && p.length === 9) p = "254" + p;
-  if (p.startsWith("+")) p = p.replace(/\D/g, "");
   if (!/^2547\d{8}$/.test(p) && !/^2541\d{8}$/.test(p)) {
     throw new Error("Enter a valid Kenyan mobile number (e.g. 07XXXXXXXX)");
   }
@@ -105,10 +89,6 @@ function timestamp() {
   );
 }
 
-/**
- * Initiate STK Push
- * @returns Daraja response (CheckoutRequestID, MerchantRequestID, ...)
- */
 async function stkPush({ amount, phone, accountReference, transactionDesc }) {
   if (!isConfigured()) {
     const err = new Error("M-Pesa is not configured on the server");
@@ -144,6 +124,14 @@ async function stkPush({ amount, phone, accountReference, transactionDesc }) {
     TransactionDesc: String(transactionDesc || "Rent payment").slice(0, 13),
   };
 
+  console.log("[mpesa] STK request", {
+    shortcode,
+    transactionType,
+    amount: amt,
+    phone: normalized,
+    callback: body.CallBackURL,
+  });
+
   const res = await fetch(`${baseUrl()}/mpesa/stkpush/v1/processrequest`, {
     method: "POST",
     headers: {
@@ -165,6 +153,8 @@ async function stkPush({ amount, phone, accountReference, transactionDesc }) {
     err.status = 502;
     throw err;
   }
+
+  console.log("[mpesa] STK response", data);
 
   if (data.ResponseCode !== "0" && data.ResponseCode !== 0) {
     const err = new Error(
