@@ -7,8 +7,7 @@ const rentPaymentSchema = new mongoose.Schema(
     unitCode: { type: String, default: "" },
     buildingName: { type: String, default: "" },
     amount: { type: Number, required: true, min: 1 },
-    phone: { type: String, required: true }, // 2547...
-    // M-Pesa
+    phone: { type: String, required: true },
     merchantRequestId: { type: String, default: "" },
     checkoutRequestId: { type: String, default: "", index: true },
     mpesaReceipt: { type: String, default: "" },
@@ -21,6 +20,13 @@ const rentPaymentSchema = new mongoose.Schema(
     },
   },
   { timestamps: true }
+);
+
+rentPaymentSchema.index({ status: 1, createdAt: -1 });
+rentPaymentSchema.index({ property: 1, phone: 1, status: 1, createdAt: -1 });
+rentPaymentSchema.index(
+  { mpesaReceipt: 1 },
+  { unique: true, partialFilterExpression: { mpesaReceipt: { $gt: "" } }, sparse: true }
 );
 
 module.exports = mongoose.model("RentPayment", rentPaymentSchema);
