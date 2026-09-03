@@ -3,34 +3,21 @@ const RentPayment = require("../models/RentPayment");
 const asyncHandler = require("../utils/asyncHandler");
 const { stkPush, isConfigured, normalizePhone } = require("../utils/mpesa");
 
-/**
- * GET /api/public/properties
- * Public catalogue for the rent-pay page: active units grouped-friendly.
- * Excludes deactivated.
- */
 const listPublicProperties = asyncHandler(async (req, res) => {
-  const properties = await Property.find({
-    status: { $ne: "deactivated" },
-  })
-    .select("name buildingName floorLabel floorNumber unitCode category area monthlyRent status description")
+  const properties = await Property.find({ status: { $ne: "deactivated" } })
+    .select(
+      "name buildingName floorLabel floorNumber unitCode category area monthlyRent status description"
+    )
     .sort({ buildingName: 1, floorNumber: 1, unitCode: 1, name: 1 })
     .lean();
 
-  // Unique house/building labels for the first dropdown
   const buildings = [
-    ...new Set(
-      properties.map((p) => p.buildingName || p.name).filter(Boolean)
-    ),
+    ...new Set(properties.map((p) => p.buildingName || p.name).filter(Boolean)),
   ].sort();
 
   res.json({ buildings, properties });
 });
 
-/**
- * POST /api/public/mpesa/stk
- * body: { propertyId, phone, amount? }
- * Initiates STK push. Amount defaults to the unit's monthlyRent.
- */
 const initiateStk = asyncHandler(async (req, res) => {
   if (!isConfigured()) {
     return res.status(503).json({ error: "M-Pesa is not configured on the server." });
@@ -57,6 +44,22 @@ const initiateStk = asyncHandler(async (req, res) => {
     normalized = normalizePhone(phone);
   } catch (e) {
     return res.status(400).json({ error: e.message });
+  }
+
+  // Prevent double STK: pending for same unit + phone within 15 minutes
+  const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000);
+  const existingPending = await RentPayment.findOne({
+    property: propertyId,
+    phone: normalized,
+    status: "pending",
+    createdAt: { $gte: fifteenMinAgo },
+  });
+  if (existingPending) {
+    return res.status(409).json({
+      error:
+        "A payment prompt is already open for this number. Complete it on your phone or wait a few minutes.",
+      paymentId: existingPending._id,
+    });
   }
 
   const accountRef = (property.unitCode || property.name || "RENT").replace(/\s+/g, "").slice(0, 12);
@@ -103,12 +106,8 @@ const initiateStk = asyncHandler(async (req, res) => {
   }
 });
 
-/**
- * POST /api/public/mpesa/callback
- * Safaricom posts the STK result here. Always respond 200 quickly.
- */
 const mpesaCallback = asyncHandler(async (req, res) => {
-  // Always ACK first so Safaricom doesn't retry aggressively
+  // Always ACK quickly
   res.json({ ResultCode: 0, ResultDesc: "Accepted" });
 
   try {
@@ -121,6 +120,11 @@ const mpesaCallback = asyncHandler(async (req, res) => {
 
     const payment = await RentPayment.findOne({ checkoutRequestId });
     if (!payment) return;
+
+    // Idempotent: already final
+    if (payment.status === "success" || payment.status === "failed" || payment.status === "cancelled") {
+      return;
+    }
 
     payment.resultCode = resultCode;
     payment.resultDesc = resultDesc;
@@ -139,10 +143,6 @@ const mpesaCallback = asyncHandler(async (req, res) => {
   }
 });
 
-/**
- * GET /api/public/mpesa/status/:paymentId
- * Client can poll after STK to see if payment completed.
- */
 const paymentStatus = asyncHandler(async (req, res) => {
   const payment = await RentPayment.findById(req.params.paymentId).select(
     "status amount phone mpesaReceipt resultDesc propertyName unitCode buildingName createdAt"
