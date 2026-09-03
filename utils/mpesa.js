@@ -1,13 +1,3 @@
-/**
- * Safaricom Daraja STK Push helpers.
- * Env:
- *   MPESA_CONSUMER_KEY, MPESA_CONSUMER_SECRET
- *   MPESA_SHORTCODE (Paybill/Till)
- *   MPESA_PASSKEY
- *   MPESA_CALLBACK_URL  (public HTTPS URL to /api/public/mpesa/callback)
- *   MPESA_ENV = sandbox | production  (default sandbox)
- */
-
 function baseUrl() {
   return process.env.MPESA_ENV === "production"
     ? "https://api.safaricom.co.ke"
@@ -38,12 +28,11 @@ async function getAccessToken() {
   return data.access_token;
 }
 
-/** Normalize KE phone to 2547XXXXXXXX */
 function normalizePhone(phone) {
   let p = String(phone || "").replace(/\D/g, "");
   if (p.startsWith("0")) p = "254" + p.slice(1);
   if (p.startsWith("7") && p.length === 9) p = "254" + p;
-  if (p.startsWith("+")) p = p.slice(1);
+  if (p.startsWith("1") && p.length === 9) p = "254" + p;
   if (!/^2547\d{8}$/.test(p) && !/^2541\d{8}$/.test(p)) {
     throw new Error("Enter a valid Kenyan mobile number (e.g. 07XXXXXXXX)");
   }
@@ -63,10 +52,6 @@ function timestamp() {
   );
 }
 
-/**
- * Initiate STK Push.
- * @returns Daraja response (CheckoutRequestID, MerchantRequestID, ...)
- */
 async function stkPush({ amount, phone, accountReference, transactionDesc }) {
   if (!isConfigured()) {
     const err = new Error("M-Pesa is not configured on the server");
@@ -81,7 +66,9 @@ async function stkPush({ amount, phone, accountReference, transactionDesc }) {
   const password = Buffer.from(`${shortcode}${passkey}${ts}`).toString("base64");
   const normalized = normalizePhone(phone);
   const amt = Math.round(Number(amount));
-  if (!amt || amt < 1) throw Object.assign(new Error("Amount must be at least 1"), { status: 400 });
+  if (!amt || amt < 1) {
+    throw Object.assign(new Error("Amount must be at least 1"), { status: 400 });
+  }
 
   const body = {
     BusinessShortCode: shortcode,
