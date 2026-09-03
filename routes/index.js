@@ -10,12 +10,14 @@ const auditRoutes = require("./auditRoutes");
 const balanceRoutes = require("./balanceRoutes");
 const fieldUpdateRoutes = require("./fieldUpdateRoutes");
 const publicPaymentRoutes = require("./publicPaymentRoutes");
+const paymentAdminRoutes = require("./paymentAdminRoutes");
 
 const router = express.Router();
 
 router.get("/health", (req, res) => res.json({ ok: true, actor: req.actor }));
 
 router.use("/public", publicPaymentRoutes);
+router.use("/payments", paymentAdminRoutes);
 router.use("/audit", auditRoutes);
 router.use("/balances", balanceRoutes);
 router.use("/field-updates", fieldUpdateRoutes);
