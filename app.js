@@ -31,7 +31,14 @@ app.use(
   })
 );
 
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
+
+// Request logging (shows up in Render logs)
+app.use((req, res, next) => {
+  console.log(`[http] ${req.method} ${req.originalUrl}`);
+  next();
+});
+
 app.use(attachActor);
 app.use("/api", attachAudit);
 app.use("/api", routes);
