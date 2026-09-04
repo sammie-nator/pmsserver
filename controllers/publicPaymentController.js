@@ -1,8 +1,20 @@
 const Property = require("../models/Property");
 const RentPayment = require("../models/RentPayment");
 const asyncHandler = require("../utils/asyncHandler");
-const { stkPush, isConfigured, normalizePhone } = require("../utils/mpesa");
+const {
+  stkPush,
+  isConfigured,
+  normalizePhone,
+  queryStkStatus,
+} = require("../utils/mpesa");
 
+// Throttle STK query per payment (samolvic pattern — avoids spike arrest)
+const lastQueryAt = new Map();
+const STK_QUERY_MIN_INTERVAL_MS = 12000;
+
+/**
+ * GET /api/public/properties
+ */
 const listPublicProperties = asyncHandler(async (req, res) => {
   const properties = await Property.find({ status: { $ne: "deactivated" } })
     .select(
@@ -18,6 +30,10 @@ const listPublicProperties = asyncHandler(async (req, res) => {
   res.json({ buildings, properties });
 });
 
+/**
+ * POST /api/public/mpesa/stk
+ * body: { propertyId, phone, amount? }
+ */
 const initiateStk = asyncHandler(async (req, res) => {
   if (!isConfigured()) {
     return res.status(503).json({ error: "M-Pesa is not configured on the server." });
@@ -47,6 +63,7 @@ const initiateStk = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: e.message });
   }
 
+  // Anti double-pay: pending STK for same unit + phone within 15 minutes
   const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000);
   const existingPending = await RentPayment.findOne({
     property: propertyId,
@@ -117,8 +134,12 @@ const initiateStk = asyncHandler(async (req, res) => {
   }
 });
 
+/**
+ * POST /api/public/mpesa/callback
+ * Safaricom posts STK result here.
+ */
 const mpesaCallback = asyncHandler(async (req, res) => {
-  // Always ACK first
+  // Always ACK first so Safaricom does not retry aggressively
   res.json({ ResultCode: 0, ResultDesc: "Accepted" });
 
   try {
@@ -146,6 +167,7 @@ const mpesaCallback = asyncHandler(async (req, res) => {
       return;
     }
 
+    // Idempotent
     if (
       payment.status === "success" ||
       payment.status === "failed" ||
@@ -178,12 +200,58 @@ const mpesaCallback = asyncHandler(async (req, res) => {
   }
 });
 
+/**
+ * GET /api/public/mpesa/status/:paymentId
+ * Poll from client. If still pending, optionally query Daraja (throttled).
+ */
 const paymentStatus = asyncHandler(async (req, res) => {
-  const payment = await RentPayment.findById(req.params.paymentId).select(
-    "status amount phone mpesaReceipt resultDesc propertyName unitCode buildingName createdAt"
-  );
+  const payment = await RentPayment.findById(req.params.paymentId);
   if (!payment) return res.status(404).json({ error: "Payment not found" });
-  res.json(payment);
+
+  if (payment.status === "pending" && payment.checkoutRequestId) {
+    const id = payment._id.toString();
+    const now = Date.now();
+    const prev = lastQueryAt.get(id) || 0;
+
+    if (now - prev >= STK_QUERY_MIN_INTERVAL_MS) {
+      lastQueryAt.set(id, now);
+      try {
+        console.log("[mpesa] STK query", payment.checkoutRequestId);
+        const q = await queryStkStatus(payment.checkoutRequestId);
+        const resultCode = q.ResultCode != null ? String(q.ResultCode) : "";
+        const resultDesc = q.ResultDesc || "";
+
+        console.log("[mpesa] STK query result", { resultCode, resultDesc });
+
+        // 0 = success; 4999 = often still processing
+        if (resultCode === "0") {
+          payment.status = "success";
+          payment.resultCode = resultCode;
+          payment.resultDesc = resultDesc;
+          await payment.save();
+        } else if (resultCode && resultCode !== "4999") {
+          payment.status = resultCode === "1032" ? "cancelled" : "failed";
+          payment.resultCode = resultCode;
+          payment.resultDesc = resultDesc || payment.resultDesc;
+          await payment.save();
+        }
+      } catch (err) {
+        console.error("[mpesa] STK query failed", err.message);
+      }
+    }
+  }
+
+  res.json({
+    status: payment.status,
+    amount: payment.amount,
+    phone: payment.phone,
+    mpesaReceipt: payment.mpesaReceipt,
+    resultDesc: payment.resultDesc,
+    propertyName: payment.propertyName,
+    unitCode: payment.unitCode,
+    buildingName: payment.buildingName,
+    createdAt: payment.createdAt,
+  });
 });
 
 module.exports = {
