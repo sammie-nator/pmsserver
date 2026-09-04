@@ -1,30 +1,89 @@
-function baseUrl() {
-  if (process.env.MPESA_BASE_URL) {
-    return String(process.env.MPESA_BASE_URL).trim().replace(/\/$/, "");
+/**
+ * Daraja STK — aligned with working samolvic pattern:
+ *   BusinessShortCode = SHORTCODE (store/HO)
+ *   PartyB            = TILL_NUMBER (Buy Goods till)
+ *   TransactionType   = CustomerBuyGoodsOnline
+ *
+ * Env (either prefix works):
+ *   MPESA_ / DARAJA_  CONSUMER_KEY, CONSUMER_SECRET, PASSKEY
+ *   MPESA_SHORTCODE or DARAJA_SHORTCODE
+ *   MPESA_TILL_NUMBER or DARAJA_TILL_NUMBER
+ *   MPESA_CALLBACK_URL or DARAJA_CALLBACK_URL
+ *   MPESA_BASE_URL or DARAJA_BASE_URL (default production API)
+ *   MPESA_ENV = sandbox | production (if BASE_URL not set)
+ */
+
+function env(...keys) {
+  for (const k of keys) {
+    const v = (process.env[k] || "").trim();
+    if (v) return v;
   }
-  return process.env.MPESA_ENV === "production"
-    ? "https://api.safaricom.co.ke"
-    : "https://sandbox.safaricom.co.ke";
+  return "";
+}
+
+function baseUrl() {
+  const explicit = env("MPESA_BASE_URL", "DARAJA_BASE_URL");
+  if (explicit) return explicit.replace(/\/$/, "");
+  return env("MPESA_ENV", "DARAJA_ENV") === "sandbox"
+    ? "https://sandbox.safaricom.co.ke"
+    : "https://api.safaricom.co.ke";
+}
+
+function shortcode() {
+  return env("MPESA_SHORTCODE", "DARAJA_SHORTCODE");
+}
+
+function tillNumber() {
+  // Fall back to shortcode only if till not set
+  return env("MPESA_TILL_NUMBER", "DARAJA_TILL_NUMBER") || shortcode();
+}
+
+function passkey() {
+  return env("MPESA_PASSKEY", "DARAJA_PASSKEY");
+}
+
+function callbackUrl() {
+  return env("MPESA_CALLBACK_URL", "DARAJA_CALLBACK_URL");
+}
+
+function consumerKey() {
+  return env("MPESA_CONSUMER_KEY", "DARAJA_CONSUMER_KEY");
+}
+
+function consumerSecret() {
+  return env("MPESA_CONSUMER_SECRET", "DARAJA_CONSUMER_SECRET");
+}
+
+function transactionType() {
+  return (
+    env("MPESA_TRANSACTION_TYPE", "DARAJA_TRANSACTION_TYPE") ||
+    "CustomerBuyGoodsOnline"
+  );
 }
 
 function isConfigured() {
   return Boolean(
-    (process.env.MPESA_CONSUMER_KEY || "").trim() &&
-      (process.env.MPESA_CONSUMER_SECRET || "").trim() &&
-      (process.env.MPESA_SHORTCODE || "").trim() &&
-      (process.env.MPESA_PASSKEY || "").trim() &&
-      (process.env.MPESA_CALLBACK_URL || "").trim()
+    consumerKey() &&
+      consumerSecret() &&
+      shortcode() &&
+      passkey() &&
+      callbackUrl()
   );
 }
 
-async function getAccessToken() {
-  const key = (process.env.MPESA_CONSUMER_KEY || "").trim();
-  const secret = (process.env.MPESA_CONSUMER_SECRET || "").trim();
+// Token cache (samolvic pattern — avoid spike arrest)
+let tokenCache = { token: null, expiresAt: 0 };
 
+async function getAccessToken() {
+  const now = Date.now();
+  if (tokenCache.token && now < tokenCache.expiresAt) {
+    return tokenCache.token;
+  }
+
+  const key = consumerKey();
+  const secret = consumerSecret();
   if (!key || !secret) {
-    const err = new Error(
-      "MPESA_CONSUMER_KEY or MPESA_CONSUMER_SECRET is missing on the server"
-    );
+    const err = new Error("Daraja consumer key/secret missing");
     err.status = 503;
     throw err;
   }
@@ -34,36 +93,34 @@ async function getAccessToken() {
 
   const res = await fetch(url, {
     method: "GET",
-    headers: {
-      Authorization: `Basic ${auth}`,
-      Accept: "application/json",
-    },
+    headers: { Authorization: `Basic ${auth}`, Accept: "application/json" },
   });
-
-  const text = await res.text();
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    const err = new Error(
-      `Daraja OAuth non-JSON response (${res.status}): ${text.slice(0, 200)}`
-    );
-    err.status = 502;
-    throw err;
-  }
+  const data = await res.json().catch(() => ({}));
 
   if (!data.access_token) {
     const msg =
-      data.errorMessage ||
-      data.error_description ||
-      data.error ||
-      JSON.stringify(data);
+      data.errorMessage || data.error_description || data.error || JSON.stringify(data);
     const err = new Error(`Daraja OAuth failed: ${msg}`);
     err.status = 502;
     throw err;
   }
 
-  return data.access_token;
+  const expiresInSec = Number(data.expires_in) || 3600;
+  tokenCache = {
+    token: data.access_token,
+    expiresAt: now + (expiresInSec - 60) * 1000,
+  };
+  console.log("[mpesa] access token obtained (cached)");
+  return tokenCache.token;
+}
+
+function buildPassword() {
+  const ts = new Date()
+    .toISOString()
+    .replace(/[^0-9]/g, "")
+    .slice(0, 14);
+  const password = Buffer.from(`${shortcode()}${passkey()}${ts}`).toString("base64");
+  return { timestamp: ts, password };
 }
 
 function normalizePhone(phone) {
@@ -76,19 +133,6 @@ function normalizePhone(phone) {
   return p;
 }
 
-function timestamp() {
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, "0");
-  return (
-    d.getFullYear() +
-    pad(d.getMonth() + 1) +
-    pad(d.getDate()) +
-    pad(d.getHours()) +
-    pad(d.getMinutes()) +
-    pad(d.getSeconds())
-  );
-}
-
 async function stkPush({ amount, phone, accountReference, transactionDesc }) {
   if (!isConfigured()) {
     const err = new Error("M-Pesa is not configured on the server");
@@ -97,39 +141,39 @@ async function stkPush({ amount, phone, accountReference, transactionDesc }) {
   }
 
   const token = await getAccessToken();
-  const shortcode = (process.env.MPESA_SHORTCODE || "").trim();
-  const passkey = (process.env.MPESA_PASSKEY || "").trim();
-  const ts = timestamp();
-  const password = Buffer.from(`${shortcode}${passkey}${ts}`).toString("base64");
+  const { timestamp, password } = buildPassword();
   const normalized = normalizePhone(phone);
   const amt = Math.round(Number(amount));
   if (!amt || amt < 1) {
     throw Object.assign(new Error("Amount must be at least 1"), { status: 400 });
   }
 
-  const transactionType =
-    process.env.MPESA_TRANSACTION_TYPE || "CustomerPayBillOnline";
+  const sc = shortcode();
+  const till = tillNumber();
+  const type = transactionType();
 
+  // Same shape as working samolvic:
+  // BusinessShortCode = shortcode, PartyB = till
   const body = {
-    BusinessShortCode: shortcode,
+    BusinessShortCode: sc,
     Password: password,
-    Timestamp: ts,
-    TransactionType: transactionType,
+    Timestamp: timestamp,
+    TransactionType: type,
     Amount: amt,
     PartyA: normalized,
-    PartyB: shortcode,
+    PartyB: till,
     PhoneNumber: normalized,
-    CallBackURL: (process.env.MPESA_CALLBACK_URL || "").trim(),
+    CallBackURL: callbackUrl(),
     AccountReference: String(accountReference || "Rent").slice(0, 12),
-    TransactionDesc: String(transactionDesc || "Rent payment").slice(0, 13),
+    TransactionDesc: String(transactionDesc || "Rent").slice(0, 13),
   };
 
   console.log("[mpesa] STK request", {
-    shortcode,
-    transactionType,
+    BusinessShortCode: sc,
+    PartyB: till,
+    TransactionType: type,
     amount: amt,
     phone: normalized,
-    callback: body.CallBackURL,
   });
 
   const res = await fetch(`${baseUrl()}/mpesa/stkpush/v1/processrequest`, {
@@ -142,18 +186,7 @@ async function stkPush({ amount, phone, accountReference, transactionDesc }) {
     body: JSON.stringify(body),
   });
 
-  const text = await res.text();
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    const err = new Error(
-      `Daraja STK non-JSON response (${res.status}): ${text.slice(0, 200)}`
-    );
-    err.status = 502;
-    throw err;
-  }
-
+  const data = await res.json().catch(() => ({}));
   console.log("[mpesa] STK response", data);
 
   if (data.ResponseCode !== "0" && data.ResponseCode !== 0) {
@@ -168,10 +201,36 @@ async function stkPush({ amount, phone, accountReference, transactionDesc }) {
   return data;
 }
 
+/** Optional: query STK result if callback is slow (samolvic pattern) */
+async function queryStkStatus(checkoutRequestId) {
+  const token = await getAccessToken();
+  const { timestamp, password } = buildPassword();
+
+  const res = await fetch(`${baseUrl()}/mpesa/stkpushquery/v1/query`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      BusinessShortCode: shortcode(),
+      Password: password,
+      Timestamp: timestamp,
+      CheckoutRequestID: checkoutRequestId,
+    }),
+  });
+
+  return res.json().catch(() => ({}));
+}
+
 module.exports = {
   isConfigured,
   getAccessToken,
   normalizePhone,
   stkPush,
+  queryStkStatus,
   baseUrl,
+  shortcode,
+  tillNumber,
 };
